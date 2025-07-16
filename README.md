@@ -1,0 +1,1 @@
+# cursor_AiDE_Agent_Web_Plugin
