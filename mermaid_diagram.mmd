@@ -1,0 +1,102 @@
+graph TD
+    %% Data Stores and Queues Definition
+    subgraph DataStores ["Data Stores & Queues"]
+        direction LR
+        JobTitleTierApprovalsTable["🗄️ JobTitleTierApprovalsTable"]
+        CommerceHRUserDataTable["🗄️ CommerceHRUserDataTable"]
+        FacilitySalesCenterMappingsTable["🗄️ FacilitySalesCenterMappingsTable"]
+        CHREmailNotificationsTable["🗄️ CHREmailNotificationsTable"]
+        CommerceHRUserSalesOrgQueue("📧 CommerceHRUserSalesOrgQueue")
+        CommerceHRUserTierApprovalsQueue("📧 CommerceHRUserTierApprovalsQueue")
+    end
+
+    %% Main Event Bus
+    EventBus(["📡 EventBridge Bus"])
+
+    %% State Machine for User Creation
+    subgraph StateMachine ["CHRUserCreationStateMachine"]
+        direction TB
+        
+        Start(Start) --> CHRUserCreationStateMachineEventRule{"Event: created-commerce-user"}
+        CHRUserCreationStateMachineEventRule --> CHRLookupUserJobTitleAndApprovalService["☁️ CHRLookupUserJobTitleAndApprovalService"]
+        
+        CHRLookupUserJobTitleAndApprovalService --> JobTitleTierApprovalsTable
+        CHRLookupUserJobTitleAndApprovalService --> CommerceHRUserDataTable
+        CHRLookupUserJobTitleAndApprovalService --> ChoiceJobTitle{"jobtitle_record_exists?"}
+        
+        ChoiceJobTitle -->|"true"| CHRLookupUserFacilityNameService["☁️ CHRLookupUserFacilityNameService"]
+        CHRLookupUserFacilityNameService --> FacilitySalesCenterMappingsTable
+        CHRLookupUserFacilityNameService --> ChoiceFacility{"facility_salecenter_exists?"}
+
+        ChoiceJobTitle -->|"false"| CHRUserJobApprovalLevelNotFoundNotificationService["☁️ CHRUserJobApprovalLevelNotFoundNotificationService"]
+        CHRUserJobApprovalLevelNotFoundNotificationService --> CHREmailNotificationsTable
+        CHRUserJobApprovalLevelNotFoundNotificationService -->|"Set Status: FAILED"| CommerceHRUserDataTable
+        CHRUserJobApprovalLevelNotFoundNotificationService --> End1((End))
+
+        ChoiceFacility -->|"true"| CHRVerifyAndSetUserDiAccountService["☁️ CHRVerifyAndSetUserDiAccountService"]
+        CHRVerifyAndSetUserDiAccountService -->|"Liferay API"| Liferay1("☁️ Liferay/DI Platform")
+        CHRVerifyAndSetUserDiAccountService --> CHRCreateCommerceUserAccountService["☁️ CHRCreateCommerceUserAccountService"]
+        
+        ChoiceFacility -->|"false"| CHRUserFacilitySalesCenterNotFoundNotificationService["☁️ CHRUserFacilitySalesCenterNotFoundNotificationService"]
+        CHRUserFacilitySalesCenterNotFoundNotificationService --> CHREmailNotificationsTable
+        CHRUserFacilitySalesCenterNotFoundNotificationService -->|"Set Status: FAILED"| CommerceHRUserDataTable
+        CHRUserFacilitySalesCenterNotFoundNotificationService --> End2((End))
+
+        CHRCreateCommerceUserAccountService -->|"Liferay API"| Liferay1
+        CHRCreateCommerceUserAccountService -->|"Set Acct Name"| CommerceHRUserDataTable
+        CHRCreateCommerceUserAccountService --> CHRAddSalesCenterGroupsToAccountService["☁️ CHRAddSalesCenterGroupsToAccountService"]
+
+        CHRAddSalesCenterGroupsToAccountService -->|"Liferay API"| Liferay1
+        CHRAddSalesCenterGroupsToAccountService -->|"Success"| CHRAddCreateUserFacilityCenterSalesOrgService["☁️ CHRAddCreateUserFacilityCenterSalesOrgService"]
+        CHRAddSalesCenterGroupsToAccountService -->|"Failure"| CommerceHRUserDataTable
+        CHRAddSalesCenterGroupsToAccountService -->|"Failure"| End3((End))
+
+        CHRAddCreateUserFacilityCenterSalesOrgService -->|"Event: add-user-to-sales-center-handler"| EventBus
+        CHRAddCreateUserFacilityCenterSalesOrgService --> CHRAddCreateUserManagerSalesOrgEventToQueueService["☁️ CHRAddCreateUserManagerSalesOrgEventToQueueService"]
+
+        CHRAddCreateUserManagerSalesOrgEventToQueueService -->|"Puts message"| CommerceHRUserSalesOrgQueue
+        CHRAddCreateUserManagerSalesOrgEventToQueueService --> CHRAddUserTierApproversToQueueService["☁️ CHRAddUserTierApproversToQueueService"]
+
+        CHRAddUserTierApproversToQueueService -->|"Puts message"| CommerceHRUserTierApprovalsQueue
+        CHRAddUserTierApproversToQueueService --> ChoiceInsights{"insights_required?"}
+
+        ChoiceInsights -->|"true"| SendMailNotificationToDomoAboutUserService["☁️ SendMailNotificationToDomoAboutUserService"]
+        SendMailNotificationToDomoAboutUserService -->|"Set Status: COMPLETED"| CommerceHRUserDataTable
+        SendMailNotificationToDomoAboutUserService --> CHREmailNotificationsTable
+        SendMailNotificationToDomoAboutUserService --> End4((End))
+
+        ChoiceInsights -->|"false"| SendMailNotificationToCokeAdminAboutUserService["☁️ SendMailNotificationToCokeAdminAboutUserService"]
+        SendMailNotificationToCokeAdminAboutUserService -->|"Set Status: COMPLETED"| CommerceHRUserDataTable
+        SendMailNotificationToCokeAdminAboutUserService -->|"Direct Email & Notification"| CHREmailNotificationsTable
+        SendMailNotificationToCokeAdminAboutUserService --> End5((End))
+    end
+
+    %% Asynchronous Flows
+    subgraph AsyncProcessing ["Asynchronous Processing"]
+        direction TB
+        
+        %% Sales Center Org Async
+        EventBus -->|"Event: add-user-to-sales-center-handler"| CHRAddUserOrgToSalesCenterOrgAsyncService["☁️ CHRAddUserOrgToSalesCenterOrgAsyncService"]
+        CHRAddUserOrgToSalesCenterOrgAsyncService -->|"Liferay API"| Liferay1
+        CHRAddUserOrgToSalesCenterOrgAsyncService -->|"Failure"| CommerceHRUserDataTable
+
+        %% Manager Hierarchy SQS
+        CommerceHRUserSalesOrgQueue --> CHRAddUserToManagerSalesOrgHierarchyService["☁️ CHRAddUserToManagerSalesOrgHierarchyService"]
+        CHRAddUserToManagerSalesOrgHierarchyService -->|"Liferay API"| Liferay1
+        CHRAddUserToManagerSalesOrgHierarchyService --> ChoiceManagerOrg{"Manager Org Found?"}
+        ChoiceManagerOrg -->|"Yes"| Liferay1
+        ChoiceManagerOrg -->|"No, Retries < 10"| CommerceHRUserSalesOrgQueue
+        ChoiceManagerOrg -->|"No, Retries >= 10"| CHREmailNotificationsTable
+        ChoiceManagerOrg -->|"No, Retries >= 10"| CommerceHRUserDataTable
+
+        %% Tier Approvers SQS
+        CommerceHRUserTierApprovalsQueue --> CHRAddTierLevelApproversToUserAccountService["☁️ CHRAddTierLevelApproversToUserAccountService"]
+        CHRAddTierLevelApproversToUserAccountService --> ChoiceApprovalLevel{"Approval Level?"}
+        ChoiceApprovalLevel -->|"Exempt"| CHREmailNotificationsTable
+        ChoiceApprovalLevel -->|"A, B, or C"| Liferay1
+        ChoiceApprovalLevel -->|"A, B, or C Failure"| CHREmailNotificationsTable
+        ChoiceApprovalLevel -->|"A, B, or C Failure"| CommerceHRUserDataTable
+    end
+
+    classDef state fill:#f9f,stroke:#333,stroke-width:2px
+    class Start,End1,End2,End3,End4,End5 state
