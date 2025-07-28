@@ -1,102 +1,195 @@
 graph TD
-    %% Data Stores and Queues Definition
-    subgraph DataStores ["Data Stores & Queues"]
+    %% ========================================
+    %% EXTERNAL SYSTEMS & DATA LAYER
+    %% ========================================
+    subgraph External ["🌐 External Systems"]
         direction LR
-        JobTitleTierApprovalsTable["🗄️ JobTitleTierApprovalsTable"]
-        CommerceHRUserDataTable["🗄️ CommerceHRUserDataTable"]
-        FacilitySalesCenterMappingsTable["🗄️ FacilitySalesCenterMappingsTable"]
-        CHREmailNotificationsTable["🗄️ CHREmailNotificationsTable"]
-        CommerceHRUserSalesOrgQueue("📧 CommerceHRUserSalesOrgQueue")
-        CommerceHRUserTierApprovalsQueue("📧 CommerceHRUserTierApprovalsQueue")
+        Liferay["☁️ Liferay/DI Platform"]
+        Domo["📊 Domo Analytics"]
+        EmailSystem["📧 Email System"]
     end
 
-    %% Main Event Bus
-    EventBus(["📡 EventBridge Bus"])
+    subgraph DataLayer ["🗄️ Data Layer"]
+        direction TB
+        JobTitleTierApprovalsTable["📋 Job Title Tier<br/>Approvals Table"]
+        CommerceHRUserDataTable["👤 Commerce HR<br/>User Data Table"]
+        FacilitySalesCenterMappingsTable["🏢 Facility Sales Center<br/>Mappings Table"]
+        CHREmailNotificationsTable["📬 Email Notifications<br/>Table"]
+    end
 
-    %% State Machine for User Creation
-    subgraph StateMachine ["CHRUserCreationStateMachine"]
+    subgraph MessageQueues ["📨 Message Queues"]
+        direction LR
+        CommerceHRUserSalesOrgQueue["📤 User Sales Org<br/>Queue"]
+        CommerceHRUserTierApprovalsQueue["📤 User Tier Approvals<br/>Queue"]
+    end
+
+    %% ========================================
+    %% MAIN EVENT BUS
+    %% ========================================
+    EventBus(["🚌 EventBridge Bus<br/><i>Central Event Hub</i>"])
+
+    %% ========================================
+    %% MAIN STATE MACHINE WORKFLOW
+    %% ========================================
+    subgraph MainWorkflow ["🔄 CHR User Creation State Machine"]
         direction TB
         
-        Start(Start) --> CHRUserCreationStateMachineEventRule{"Event: created-commerce-user"}
-        CHRUserCreationStateMachineEventRule --> CHRLookupUserJobTitleAndApprovalService["☁️ CHRLookupUserJobTitleAndApprovalService"]
+        %% Entry Point
+        Start([🚀 Start]) 
+        EventRule{"📥 Event Received<br/><i>created-commerce-user</i>"}
         
-        CHRLookupUserJobTitleAndApprovalService --> JobTitleTierApprovalsTable
-        CHRLookupUserJobTitleAndApprovalService --> CommerceHRUserDataTable
-        CHRLookupUserJobTitleAndApprovalService --> ChoiceJobTitle{"jobtitle_record_exists?"}
+        %% Job Title Lookup Phase
+        subgraph JobTitlePhase ["1️⃣ Job Title Validation"]
+            LookupJobTitle["🔍 Lookup Job Title<br/>& Approval Service"]
+            JobTitleDecision{"📊 Job Title<br/>Record Exists?"}
+            JobTitleError["❌ Job Title Not Found<br/>Notification Service"]
+        end
         
-        ChoiceJobTitle -->|"true"| CHRLookupUserFacilityNameService["☁️ CHRLookupUserFacilityNameService"]
-        CHRLookupUserFacilityNameService --> FacilitySalesCenterMappingsTable
-        CHRLookupUserFacilityNameService --> ChoiceFacility{"facility_salecenter_exists?"}
-
-        ChoiceJobTitle -->|"false"| CHRUserJobApprovalLevelNotFoundNotificationService["☁️ CHRUserJobApprovalLevelNotFoundNotificationService"]
-        CHRUserJobApprovalLevelNotFoundNotificationService --> CHREmailNotificationsTable
-        CHRUserJobApprovalLevelNotFoundNotificationService -->|"Set Status: FAILED"| CommerceHRUserDataTable
-        CHRUserJobApprovalLevelNotFoundNotificationService --> End1((End))
-
-        ChoiceFacility -->|"true"| CHRVerifyAndSetUserDiAccountService["☁️ CHRVerifyAndSetUserDiAccountService"]
-        CHRVerifyAndSetUserDiAccountService -->|"Liferay API"| Liferay1("☁️ Liferay/DI Platform")
-        CHRVerifyAndSetUserDiAccountService --> CHRCreateCommerceUserAccountService["☁️ CHRCreateCommerceUserAccountService"]
+        %% Facility Lookup Phase
+        subgraph FacilityPhase ["2️⃣ Facility Validation"]
+            LookupFacility["🏢 Lookup Facility<br/>Name Service"]
+            FacilityDecision{"🏢 Facility Sales<br/>Center Exists?"}
+            FacilityError["❌ Facility Not Found<br/>Notification Service"]
+        end
         
-        ChoiceFacility -->|"false"| CHRUserFacilitySalesCenterNotFoundNotificationService["☁️ CHRUserFacilitySalesCenterNotFoundNotificationService"]
-        CHRUserFacilitySalesCenterNotFoundNotificationService --> CHREmailNotificationsTable
-        CHRUserFacilitySalesCenterNotFoundNotificationService -->|"Set Status: FAILED"| CommerceHRUserDataTable
-        CHRUserFacilitySalesCenterNotFoundNotificationService --> End2((End))
-
-        CHRCreateCommerceUserAccountService -->|"Liferay API"| Liferay1
-        CHRCreateCommerceUserAccountService -->|"Set Acct Name"| CommerceHRUserDataTable
-        CHRCreateCommerceUserAccountService --> CHRAddSalesCenterGroupsToAccountService["☁️ CHRAddSalesCenterGroupsToAccountService"]
-
-        CHRAddSalesCenterGroupsToAccountService -->|"Liferay API"| Liferay1
-        CHRAddSalesCenterGroupsToAccountService -->|"Success"| CHRAddCreateUserFacilityCenterSalesOrgService["☁️ CHRAddCreateUserFacilityCenterSalesOrgService"]
-        CHRAddSalesCenterGroupsToAccountService -->|"Failure"| CommerceHRUserDataTable
-        CHRAddSalesCenterGroupsToAccountService -->|"Failure"| End3((End))
-
-        CHRAddCreateUserFacilityCenterSalesOrgService -->|"Event: add-user-to-sales-center-handler"| EventBus
-        CHRAddCreateUserFacilityCenterSalesOrgService --> CHRAddCreateUserManagerSalesOrgEventToQueueService["☁️ CHRAddCreateUserManagerSalesOrgEventToQueueService"]
-
-        CHRAddCreateUserManagerSalesOrgEventToQueueService -->|"Puts message"| CommerceHRUserSalesOrgQueue
-        CHRAddCreateUserManagerSalesOrgEventToQueueService --> CHRAddUserTierApproversToQueueService["☁️ CHRAddUserTierApproversToQueueService"]
-
-        CHRAddUserTierApproversToQueueService -->|"Puts message"| CommerceHRUserTierApprovalsQueue
-        CHRAddUserTierApproversToQueueService --> ChoiceInsights{"insights_required?"}
-
-        ChoiceInsights -->|"true"| SendMailNotificationToDomoAboutUserService["☁️ SendMailNotificationToDomoAboutUserService"]
-        SendMailNotificationToDomoAboutUserService -->|"Set Status: COMPLETED"| CommerceHRUserDataTable
-        SendMailNotificationToDomoAboutUserService --> CHREmailNotificationsTable
-        SendMailNotificationToDomoAboutUserService --> End4((End))
-
-        ChoiceInsights -->|"false"| SendMailNotificationToCokeAdminAboutUserService["☁️ SendMailNotificationToCokeAdminAboutUserService"]
-        SendMailNotificationToCokeAdminAboutUserService -->|"Set Status: COMPLETED"| CommerceHRUserDataTable
-        SendMailNotificationToCokeAdminAboutUserService -->|"Direct Email & Notification"| CHREmailNotificationsTable
-        SendMailNotificationToCokeAdminAboutUserService --> End5((End))
+        %% Account Creation Phase
+        subgraph AccountPhase ["3️⃣ Account Creation"]
+            VerifyDIAccount["✅ Verify & Set<br/>DI Account Service"]
+            CreateAccount["👤 Create Commerce<br/>User Account Service"]
+            AddSalesGroups["👥 Add Sales Center<br/>Groups Service"]
+        end
+        
+        %% Organization Setup Phase
+        subgraph OrgPhase ["4️⃣ Organization Setup"]
+            CreateSalesOrg["🏢 Create User Facility<br/>Sales Org Service"]
+            QueueManager["📋 Queue Manager<br/>Sales Org Events"]
+            QueueApprovers["🎯 Queue Tier<br/>Approvers Service"]
+        end
+        
+        %% Final Notification Phase
+        subgraph NotificationPhase ["5️⃣ Final Notifications"]
+            InsightsDecision{"📊 Insights<br/>Required?"}
+            DomoNotification["📊 Notify Domo<br/>About User"]
+            AdminNotification["👨‍💼 Notify Coke Admin<br/>About User"]
+        end
+        
+        %% End States
+        EndSuccess([✅ Success])
+        EndFailed([❌ Failed])
+        EndPartial([⚠️ Partial])
     end
 
-    %% Asynchronous Flows
-    subgraph AsyncProcessing ["Asynchronous Processing"]
+    %% ========================================
+    %% ASYNCHRONOUS PROCESSING
+    %% ========================================
+    subgraph AsyncWorkflow ["🔄 Asynchronous Processing"]
         direction TB
         
-        %% Sales Center Org Async
-        EventBus -->|"Event: add-user-to-sales-center-handler"| CHRAddUserOrgToSalesCenterOrgAsyncService["☁️ CHRAddUserOrgToSalesCenterOrgAsyncService"]
-        CHRAddUserOrgToSalesCenterOrgAsyncService -->|"Liferay API"| Liferay1
-        CHRAddUserOrgToSalesCenterOrgAsyncService -->|"Failure"| CommerceHRUserDataTable
-
-        %% Manager Hierarchy SQS
-        CommerceHRUserSalesOrgQueue --> CHRAddUserToManagerSalesOrgHierarchyService["☁️ CHRAddUserToManagerSalesOrgHierarchyService"]
-        CHRAddUserToManagerSalesOrgHierarchyService -->|"Liferay API"| Liferay1
-        CHRAddUserToManagerSalesOrgHierarchyService --> ChoiceManagerOrg{"Manager Org Found?"}
-        ChoiceManagerOrg -->|"Yes"| Liferay1
-        ChoiceManagerOrg -->|"No, Retries < 10"| CommerceHRUserSalesOrgQueue
-        ChoiceManagerOrg -->|"No, Retries >= 10"| CHREmailNotificationsTable
-        ChoiceManagerOrg -->|"No, Retries >= 10"| CommerceHRUserDataTable
-
-        %% Tier Approvers SQS
-        CommerceHRUserTierApprovalsQueue --> CHRAddTierLevelApproversToUserAccountService["☁️ CHRAddTierLevelApproversToUserAccountService"]
-        CHRAddTierLevelApproversToUserAccountService --> ChoiceApprovalLevel{"Approval Level?"}
-        ChoiceApprovalLevel -->|"Exempt"| CHREmailNotificationsTable
-        ChoiceApprovalLevel -->|"A, B, or C"| Liferay1
-        ChoiceApprovalLevel -->|"A, B, or C Failure"| CHREmailNotificationsTable
-        ChoiceApprovalLevel -->|"A, B, or C Failure"| CommerceHRUserDataTable
+        subgraph SalesOrgAsync ["📈 Sales Organization Processing"]
+            AsyncSalesOrg["🔄 Add User to Sales<br/>Center Org (Async)"]
+        end
+        
+        subgraph ManagerHierarchy ["👨‍💼 Manager Hierarchy Processing"]
+            ManagerService["👔 Add User to Manager<br/>Sales Org Hierarchy"]
+            ManagerDecision{"👨‍💼 Manager Org<br/>Found?"}
+            ManagerRetry["🔄 Retry Logic<br/>(Max 10 attempts)"]
+        end
+        
+        subgraph TierApprovals ["🎯 Tier Approval Processing"]
+            TierService["🎯 Add Tier Level<br/>Approvers Service"]
+            ApprovalDecision{"📋 Approval<br/>Level?"}
+            ExemptPath["🆓 Exempt<br/>Processing"]
+            ABCPath["📊 A/B/C Level<br/>Processing"]
+        end
     end
 
-    classDef state fill:#f9f,stroke:#333,stroke-width:2px
-    class Start,End1,End2,End3,End4,End5 state
+    %% ========================================
+    %% MAIN WORKFLOW CONNECTIONS
+    %% ========================================
+    Start --> EventRule
+    EventRule --> LookupJobTitle
+    
+    %% Job Title Phase Connections
+    LookupJobTitle --> JobTitleTierApprovalsTable
+    LookupJobTitle --> CommerceHRUserDataTable
+    LookupJobTitle --> JobTitleDecision
+    JobTitleDecision -->|"✅ Found"| LookupFacility
+    JobTitleDecision -->|"❌ Not Found"| JobTitleError
+    JobTitleError --> CHREmailNotificationsTable
+    JobTitleError --> EndFailed
+    
+    %% Facility Phase Connections
+    LookupFacility --> FacilitySalesCenterMappingsTable
+    LookupFacility --> FacilityDecision
+    FacilityDecision -->|"✅ Found"| VerifyDIAccount
+    FacilityDecision -->|"❌ Not Found"| FacilityError
+    FacilityError --> CHREmailNotificationsTable
+    FacilityError --> EndFailed
+    
+    %% Account Phase Connections
+    VerifyDIAccount --> Liferay
+    VerifyDIAccount --> CreateAccount
+    CreateAccount --> Liferay
+    CreateAccount --> CommerceHRUserDataTable
+    CreateAccount --> AddSalesGroups
+    AddSalesGroups --> Liferay
+    AddSalesGroups -->|"✅ Success"| CreateSalesOrg
+    AddSalesGroups -->|"❌ Failure"| EndPartial
+    
+    %% Organization Phase Connections
+    CreateSalesOrg --> EventBus
+    CreateSalesOrg --> QueueManager
+    QueueManager --> CommerceHRUserSalesOrgQueue
+    QueueManager --> QueueApprovers
+    QueueApprovers --> CommerceHRUserTierApprovalsQueue
+    QueueApprovers --> InsightsDecision
+    
+    %% Notification Phase Connections
+    InsightsDecision -->|"✅ Yes"| DomoNotification
+    InsightsDecision -->|"❌ No"| AdminNotification
+    DomoNotification --> CHREmailNotificationsTable
+    DomoNotification --> EndSuccess
+    AdminNotification --> CHREmailNotificationsTable
+    AdminNotification --> EndSuccess
+
+    %% ========================================
+    %% ASYNC WORKFLOW CONNECTIONS
+    %% ========================================
+    EventBus -->|"📡 Sales Org Event"| AsyncSalesOrg
+    AsyncSalesOrg --> Liferay
+    AsyncSalesOrg -->|"❌ Failure"| EndPartial
+    
+    CommerceHRUserSalesOrgQueue --> ManagerService
+    ManagerService --> Liferay
+    ManagerService --> ManagerDecision
+    ManagerDecision -->|"✅ Found"| Liferay
+    ManagerDecision -->|"🔄 Retry"| ManagerRetry
+    ManagerRetry --> CommerceHRUserSalesOrgQueue
+    ManagerDecision -->|"❌ Max Retries"| CHREmailNotificationsTable
+    
+    CommerceHRUserTierApprovalsQueue --> TierService
+    TierService --> ApprovalDecision
+    ApprovalDecision -->|"🆓 Exempt"| ExemptPath
+    ApprovalDecision -->|"📊 A/B/C"| ABCPath
+    ExemptPath --> CHREmailNotificationsTable
+    ABCPath --> Liferay
+    ABCPath -->|"❌ Failure"| CHREmailNotificationsTable
+
+    %% ========================================
+    %% STYLING
+    %% ========================================
+    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:3px,color:#000
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef data fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px,color:#000
+    classDef external fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#000
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:3px,color:#000
+    
+    class Start,EndSuccess,EndFailed,EndPartial startEnd
+    class LookupJobTitle,LookupFacility,VerifyDIAccount,CreateAccount,AddSalesGroups,CreateSalesOrg,QueueManager,QueueApprovers,DomoNotification,AdminNotification,AsyncSalesOrg,ManagerService,TierService process
+    class JobTitleDecision,FacilityDecision,InsightsDecision,ManagerDecision,ApprovalDecision decision
+    class JobTitleTierApprovalsTable,CommerceHRUserDataTable,FacilitySalesCenterMappingsTable,CHREmailNotificationsTable,CommerceHRUserSalesOrgQueue,CommerceHRUserTierApprovalsQueue data
+    class Liferay,Domo,EmailSystem external
+    class JobTitleError,FacilityError error
+    class EventBus,EventRule success
